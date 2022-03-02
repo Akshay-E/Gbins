@@ -79,9 +79,35 @@ def BB_inject_sample_shifting():
 
 ########################################################################################################################################################################################################################################
 ########################################################################################################################################################################################################################################
+def gaussian(x, mu, std, C):
+    denominator = np.sqrt(2*np.pi*std**2)
+    numerator = np.exp(-1*(x - mu)**2/(2*std**2))
+    return C*(numerator/denominator)
 
-# def simulate_pulse(data_points, width):
-#RAGHAV_GIRG
+def simulate_pulse(data_points, width):
+    x = np.arange(2000) #Span of Gaussian Pulse
+    gaussian_window1 = gaussian(x, 500, 200, 500)
+    gaussian_window2 = gaussian(x, 1500, 200, 1000)
+    gaussian_window = 1+ gaussian_window1 + gaussian_window2
+    scale_factors = np.sqrt(2)*gaussian_window
+    noise = np.random.normal(0,1,data_points)
+    for i in range(2000):
+    if scale_factors[i] >= 1:
+        noise[(int)(data_points/2) + i] *= scale_factors[i]
+    else:
+        continue
+    real = noise
+    imag = noise
+    final_arr = np.zeros(2*data_points)
+    final_arr[::2] = real
+    final_arr[1::2] = imag
+    ax1 = plt.subplot(211)
+    ax1.plot(1+ gaussian_window1 + gaussian_window2)
+    ax2 = plt.subplot(212)
+    ax2.plot(final_arr)
+    plt.show()
+    return final_arr
+
 
 #def overalp_save():
 #ARUN_M
