@@ -87,13 +87,13 @@ def gaussian(x, mu, std, C):
     return C*(numerator/denominator)
 
 def simulate_pulse(data_points, width):
-    x = np.arange(2000) #Span of Gaussian Pulse
-    gaussian_window1 = gaussian(x, 500, 200, 500)
-    gaussian_window2 = gaussian(x, 1500, 200, 1000)
+    x = np.arange(width) #Span of Gaussian Pulse
+    gaussian_window1 = gaussian(x, int(width/4), 200, 500)
+    gaussian_window2 = gaussian(x, int(3*width/4), 200, 1000)
     gaussian_window = 1+ gaussian_window1 + gaussian_window2
     scale_factors = np.sqrt(2)*gaussian_window
     noise = np.random.normal(0,1,data_points)
-    for i in range(2000):
+    for i in range(width):
         if scale_factors[i] >= 1:
             noise[(int)(data_points/2) + i] *= scale_factors[i]
         else:
