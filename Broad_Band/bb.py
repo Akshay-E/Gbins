@@ -79,6 +79,8 @@ def BB_inject_sample_shifting():
 
 ########################################################################################################################################################################################################################################
 ########################################################################################################################################################################################################################################
+import numpy as np
+
 def gaussian(x, mu, std, C):
     denominator = np.sqrt(2*np.pi*std**2)
     numerator = np.exp(-1*(x - mu)**2/(2*std**2))
@@ -92,10 +94,10 @@ def simulate_pulse(data_points, width):
     scale_factors = np.sqrt(2)*gaussian_window
     noise = np.random.normal(0,1,data_points)
     for i in range(2000):
-    if scale_factors[i] >= 1:
-        noise[(int)(data_points/2) + i] *= scale_factors[i]
-    else:
-        continue
+        if scale_factors[i] >= 1:
+            noise[(int)(data_points/2) + i] *= scale_factors[i]
+        else:
+            continue
     real = noise
     imag = noise
     final_arr = np.zeros(2*data_points)
