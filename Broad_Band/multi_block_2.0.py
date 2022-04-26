@@ -15,23 +15,71 @@ from setigen.voltage import raw_utils
 class broadband(object):
     
     def __init__(self, 
-                 input_file, 
+                 input_file_stem,
+                 pulse_time,
                  dm=10, 
                  width=1000, 
                  snr=100         
                 ):
     
         self.raw_params = raw_utils.get_raw_params(input_file_stem=input_file_stem)
-        self.obs_bw= raw_params['num_chans']*xp.abs(raw_params['chan_bw'])
+        self.obs_bw= raw_params['num_chans']*np.abs(raw_params['chan_bw'])
         
+        self.smear=self._smear_() 
+        self.input_file_stem=input_file_stem
         self.dm=dm
         self.width=width
         self.snr=snr
         self.D=4.148808e3
+        self.pulse_time=pulse_time
         
-        self.smear=None 
+        assert self.pulse_time<self.raw_params['obs_length'], 'injection time exceeds length of file'
+        assert self.smear<self.raw_params['obs_length'], 'smearing across band exceeds length of file'
         
         
+        self.blocks_per_file = raw_utils.get_blocks_per_file(input_file_stem)
+        self.time_per_block = self.raw_params['block_size'] / (self.raw_params['num_antennas'] * self.raw_params['num_chans'] *                               self.raw_params['num_bits']) * self.raw_params['tbin']
+        
+
+        
+        
+    def read_blocks(self):
+        
+        blocks_to_read=np.ceil(self.smear/self.time_per_block)
+        start_block=np.floor(self.pulse_time/self.time_per_block)
+        
+        header=raw_utils.read_header(self.input_file_stem)
+        header_size= int(512 * np.ceil((80 * (len(header) + 1)) / 512))
+        data_size= int(self.raw_params['block_size'])
+        
+        block_read_size =  header_size + data_size
+
+        
+        with open(f'{self.input_file_stem}.0000.raw') as f:
+            
+            f.seek((start_block-1)*block_read_size, 0) 
+            
+            for i in range(start_block,start_block+blocks_to_read):
+                
+                f.seek(header_size, 1)
+                data= xp.frombuffer(f.read(data_size), dtype=xp.int8)
+                
+            
+            
+
+        guppi_loc='/home/arunm77/AMITY_INDIA/arunm77/broadbandinjection/B0329_ae_20.guppi.0000.raw'
+        chan_array=xp.arange(0,2047)
+
+        with open(guppi_loc,'rb') as file:
+
+            r_skip=file.read((6560+96+134217728)*(N-1)) #skipping 14 blocks
+
+            r_head=file.read(6560+96) #skipping header 
+            r2=xp.frombuffer(file.read(134217728), dtype=xp.int8)
+            r2 = xp.array(r2, dtype=int)
+
+            channelised=r2.reshape(2048, r2.shape[0]//2048)
+            return(channelised)
 #dispersion by sample shifting 
 
     def chan_time_delay(self):
@@ -73,24 +121,6 @@ class broadband(object):
 
 #dispersion by convolution 
 
-
-    def read_block(self, N):
-
-        guppi_loc='/home/arunm77/AMITY_INDIA/arunm77/broadbandinjection/B0329_ae_20.guppi.0000.raw'
-        chan_array=xp.arange(0,2047)
-
-        with open(guppi_loc,'rb') as file:
-
-            r_skip=file.read((6560+96+134217728)*(N-1)) #skipping 14 blocks
-
-            r_head=file.read(6560+96) #skipping header 
-            r2=xp.frombuffer(file.read(134217728), dtype=xp.int8)
-            r2 = xp.array(r2, dtype=int)
-
-            channelised=r2.reshape(2048, r2.shape[0]//2048)
-            return(channelised)
-
-
     def gaussian(self, x, mu, std, C):
         denominator = xp.sqrt(2*xp.pi*std**2)
         numerator = xp.exp(-1*(x - mu)**2/(2*std**2))
@@ -122,6 +152,7 @@ class broadband(object):
 
     
     def clear_cache(self):
+        
         mempool = xp.get_default_memory_pool()
         print(mempool.used_bytes()/(1024*1024))             
         print(mempool.total_bytes()/(1024*1024)) 
@@ -129,15 +160,18 @@ class broadband(object):
         mempool.free_all_blocks()
         print(mempool.used_bytes()/(1024*1024))              
         print(mempool.total_bytes()/(1024*1024)) 
+    
         
-
-    def impulse_length(self):
-
+    def _smear_(self):
+        
         f_start=self.raw_params['fch1']
         f_end=self.raw_params['fch1'] + self.obs_bw
         
-        smear= self.D*self.dm*(f_start**-2 - f_end**-2)
-        imp_length=smear//self.raw_params['tbin']
+        self.smear= self.D*self.dm*(f_start**-2 - f_end**-2)
+        
+    def impulse_length(self):
+        
+        imp_length=self.smear//self.raw_params['tbin']
 
         n=xp.ceil(xp.log(2*imp_length)/xp.log(2))
         nfft=2**n
