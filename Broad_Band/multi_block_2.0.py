@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import os
 import sys
 import time 
+import shutil 
 
 try:
     import cupy as xp
@@ -41,45 +42,7 @@ class broadband(object):
         self.time_per_block = self.raw_params['block_size'] / (self.raw_params['num_antennas'] * self.raw_params['num_chans'] *                               self.raw_params['num_bits']) * self.raw_params['tbin']
         
 
-        
-        
-    def read_blocks(self):
-        
-        blocks_to_read=np.ceil(self.smear/self.time_per_block)
-        start_block=np.floor(self.pulse_time/self.time_per_block)
-        
-        header=raw_utils.read_header(self.input_file_stem)
-        header_size= int(512 * np.ceil((80 * (len(header) + 1)) / 512))
-        data_size= int(self.raw_params['block_size'])
-        
-        block_read_size =  header_size + data_size
-
-        
-        with open(f'{self.input_file_stem}.0000.raw') as f:
-            
-            f.seek((start_block-1)*block_read_size, 0) 
-            
-            for i in range(start_block,start_block+blocks_to_read):
-                
-                f.seek(header_size, 1)
-                data= xp.frombuffer(f.read(data_size), dtype=xp.int8)
-                
-            
-            
-
-        guppi_loc='/home/arunm77/AMITY_INDIA/arunm77/broadbandinjection/B0329_ae_20.guppi.0000.raw'
-        chan_array=xp.arange(0,2047)
-
-        with open(guppi_loc,'rb') as file:
-
-            r_skip=file.read((6560+96+134217728)*(N-1)) #skipping 14 blocks
-
-            r_head=file.read(6560+96) #skipping header 
-            r2=xp.frombuffer(file.read(134217728), dtype=xp.int8)
-            r2 = xp.array(r2, dtype=int)
-
-            channelised=r2.reshape(2048, r2.shape[0]//2048)
-            return(channelised)
+  
 #dispersion by sample shifting 
 
     def chan_time_delay(self):
@@ -126,7 +89,7 @@ class broadband(object):
         numerator = xp.exp(-1*(x - mu)**2/(2*std**2))
         return C*(numerator/denominator)
 
-    def simulate_pulse(self, data_points, width):
+    def simulate_pulse(self, data_points):
         x = xp.arange(width) #Span of Gaussian Pulse
         gaussian_window1 = gaussian(x, int(width/4), 200, 50)
         gaussian_window2 = gaussian(x, int(3*width/4), 200, 100)
@@ -181,30 +144,60 @@ class broadband(object):
         return(int(imp_length), int(nfft))
 
 
+      
+    def read_chan_ts(self, chan):
+        
+        blocks_to_read=np.ceil(self.smear/self.time_per_block)
+        start_block=np.floor(self.pulse_time/self.time_per_block)
+        
+        header=raw_utils.read_header(self.input_file_stem)
+        header_size= int(512 * np.ceil((80 * (len(header) + 1)) / 512))
+        data_size= int(self.raw_params['block_size'])
+        
+        block_read_size =  header_size + data_size
+        chan_ts=[]
 
+        
+        with open(f'{self.input_file_stem}.0000.raw') as f:
+            
+            f.seek((start_block-1)*block_read_size, 0) 
+            
+            for i in range(start_block,start_block+blocks_to_read):
+                
+                f.seek(header_size, 1)
+                block= xp.frombuffer(f.read(data_size), dtype=xp.int8)
+                block.reshape(self.raw_params['num_chans'], int(data_size/self.raw_params['num_chans']))
+                xp.append(chan_ts,block[chan])
+        
+        return(chan_ts)
+         
+        
+#check for neg chan bw 
+#check for 2 pols 
+        
     def disperse(self):
-
+        
+        blocks_to_read=np.ceil(self.smear/self.time_per_block)
         f_coarse_dev=xp.linspace(0,self.obs_bw,self.raw_params['num_chans'], endpoint=False)
+        sim_len=blocks_to_read * self.raw_params['block_size']
+        
+        shutil.copyfile(self.input_file_stem, f'{self.input_file_stem}_dispersed.0000.raw')
+        
+        with open(f'{self.input_file_stem}_dispersed.0000.raw') as f:
 
-        with open('/home/eakshay/ea/b_band/data/ovs_t1.0000.raw','wb') as g:
-            with open('/home/eakshay/ea/b_band/guppi_header.txt', 'r') as hdr:
+            data=xp.empty(self.raw_params['block_size']/self.raw_params['num_chans'],float)
 
-    #             assert imp_length<=len(pulse_complex), 'imp cant be < tseries'
-                h_info=hdr.read(6560+96)
-                g.write(h_info.encode())
-                data=xp.empty(65536,float)
+            for i in range self.raw_params['num_chans']:
 
-                for i in range(2047,-1,-1):
+                h=imp_res(f_coarse_dev[i], imp_length) 
 
-                    h=imp_res(f_coarse_dev[i],bw_coarse, dm, imp_length) 
+#                 data_chan_cmplx=overlapSave(pulse_complex,h,nfft)
+                data_chan_cmplx=xp.convolve(simulate_pulse(sim_len),h, mode='same')
 
-                    data_chan_cmplx=overlapSave(pulse_complex,h,16384*3)
-                    data_chan_cmplx=xp.convolve(pulse_complex,h, mode='valid')
+                data[::2]=data_chan_cmplx.real
+                data[1::2]=data_chan_cmplx.imag
 
-                    data[0::2]=data_chan_cmplx.real
-                    data[1::2]=data_chan_cmplx.imag
-
-                    g.write(xp.array(data, dtype=xp.int8).tobytes())
+                g.write(xp.array(data, dtype=xp.int8).tobytes())
 
 
 
