@@ -132,16 +132,36 @@ class broadband(object):
         
         self.smear= self.D*self.dm*(f_start**-2 - f_end**-2)
         
+
+#     def chan_smear(self):
+
+#         f_chan_arr= self.raw_params['fch1']+xp.linspace(0, self.obs_bw, self.raw_params['num_chans'] )
+#         chan_centr=f_chan_arr+abs(self.raw_params['chan_bw'])/2.0
+        
+#         for i in range(self.raw_params['num_chans']-1):
+            
+#             t_d= self.D*self.DM*(chan_centr[i]**-2 - chan_centr[i+1]**-2)
+
+#         return(t_d)
+    
+        
     def impulse_length(self):
         
-        imp_length=self.smear//self.raw_params['tbin']
+        f_chan_arr= self.raw_params['fch1']+xp.linspace(0, self.obs_bw, self.raw_params['num_chans'] )
+        chan_centr=f_chan_arr+abs(self.raw_params['chan_bw'])/2.0
+        
+        for i in range(self.raw_params['num_chans']-1):
+            
+            t_d= self.D*self.DM*(chan_centr[i]**-2 - chan_centr[i+1]**-2)
+        
+        imp_length=t_d//self.raw_params['tbin']
 
-        n=xp.ceil(xp.log(2*imp_length)/xp.log(2))
+        n=xp.floor(xp.log(2*imp_length)/xp.log(2))
         nfft=2**n
         
         print(imp_length, nfft)
 
-        return(int(imp_length), int(nfft))
+        return((imp_length), (nfft))
 
 
       
@@ -167,6 +187,7 @@ class broadband(object):
                 f.seek(header_size, 1)
                 block= xp.frombuffer(f.read(data_size), dtype=xp.int8)
                 block.reshape(self.raw_params['num_chans'], int(data_size/self.raw_params['num_chans']))
+                #try chan * blocksize
                 xp.append(chan_ts,block[chan])
         
         return(chan_ts)
@@ -182,6 +203,7 @@ class broadband(object):
         sim_len=blocks_to_read * self.raw_params['block_size']
         
         shutil.copyfile(self.input_file_stem, f'{self.input_file_stem}_dispersed.0000.raw')
+        imp_length, nfft=self.impulse_length()
         
         with open(f'{self.input_file_stem}_dispersed.0000.raw') as f:
 
@@ -189,7 +211,7 @@ class broadband(object):
 
             for i in range self.raw_params['num_chans']:
 
-                h=imp_res(f_coarse_dev[i], imp_length) 
+                h=imp_res(f_coarse_dev[i], imp_length[i]) 
 
 #                 data_chan_cmplx=overlapSave(pulse_complex,h,nfft)
                 data_chan_cmplx=xp.convolve(simulate_pulse(sim_len),h, mode='same')
