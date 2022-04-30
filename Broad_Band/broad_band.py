@@ -44,10 +44,22 @@ class broadband(object):
 
         shutil.copyfile(self.input_file_stem, f'{self.input_file_stem}_dispersed.0000.raw')
         
+        self.blocks_to_read=np.ceil(self.smear/self.time_per_block)
+        self.start_block=np.floor(self.pulse_time/self.time_per_block)
 
-    #dispersion by sample shifting 
+        header=raw_utils.read_header(self.input_file_stem)
+        self.header_size= int(512 * np.ceil((80 * (len(header) + 1)) / 512))
+        self.data_size= int(self.raw_params['block_size'])
+        self.chan_size=int(data_size/self.raw_params['num_chans'])
+        self.block_read_size =  header_size + data_size
+        
+        slef.sim_len=blocks_to_read * data_size
+        
+        
 
-    def chan_time_delay(self,x=2):
+#dispersion by sample shifting 
+
+    def chan_time_delay(self,x):
 
         f_chan_arr= self.raw_params['fch1']+xp.linspace(0, self.obs_bw, self.raw_params['num_chans'] )
         chan_centr=f_chan_arr+self.raw_params['chan_bw']/2.0
@@ -58,32 +70,17 @@ class broadband(object):
         return(samples_to_shift)
 
 
-    def sample_shift(self, pulse):
+    def sample_shift(self,x=2 ):
 
-        sample_shift=self.chan_time_delay(power)
+        sample_shift=self.chan_time_delay(x)
 
-        with open(f'{self.input_file_stem}.0000.raw', 'rb') as org:
-            with open(f'{self.input_file_stem}_dispersed.0000.raw', 'wb') as f:
-                
-                for i in range self.raw_params['num_chans']:
-
-
-
-
-    #             for i in range(2048):
-               for i in range(2047, -1, -1):
-                   v=xp.roll(pulse, -2*int(sample_shift[i]))
-    #                 v=xp.roll(channelised[1025], -1*int(sample_shift[i])) #artificial DM 1 
-
-    #             for i in range(2047,-1,-1):
-    #                 v=xp.roll(channelised[1025], int(sample_shift[i]))    #artificial DM 2 
-    #                 v=xp.roll(channelised[1025], -1*int(sample_shift[i]))    #artificial DM 3 
-
-    #                 plt.plot(v,linewidth=0.5)
-    #                 plt.show()
-
-                   g.write(xp.array(v, dtype=xp.int8).tobytes())
-
+        for i in range (self.raw_params['num_chans']):
+            
+            gen_pulse=self.simulate_pulse(self.sim_len)
+            
+            v=xp.roll(gen_pulse, -2*slef.raw_params['num_pols']*int(sample_shift[i]))
+            self._write_(data, i)
+            
 
 #dispersion by convolution 
 
@@ -135,18 +132,6 @@ class broadband(object):
         
         self.smear= self.D*self.dm*(f_start**-2 - f_end**-2)
         
-
-#     def chan_smear(self):
-
-#         f_chan_arr= self.raw_params['fch1']+xp.linspace(0, self.obs_bw, self.raw_params['num_chans'] )
-#         chan_centr=f_chan_arr+abs(self.raw_params['chan_bw'])/2.0
-        
-#         for i in range(self.raw_params['num_chans']-1):
-            
-#             t_d= self.D*self.DM*(chan_centr[i]**-2 - chan_centr[i+1]**-2)
-
-#         return(t_d)
-    
         
     def impulse_length(self):
         
@@ -168,19 +153,7 @@ class broadband(object):
 
 
     def disperse(self):
-        ##
-        blocks_to_read=np.ceil(self.smear/self.time_per_block)
-        start_block=np.floor(self.pulse_time/self.time_per_block)
-
-        header=raw_utils.read_header(self.input_file_stem)
-        header_size= int(512 * np.ceil((80 * (len(header) + 1)) / 512))
-        data_size= int(self.raw_params['block_size'])
-        chan_size=int(data_size/self.raw_params['num_chans'])
-
-        block_read_size =  header_size + data_size
-        chan_ts=[]
-
-    #         blocks_to_read=np.ceil(self.smear/self.time_per_block)
+        
         f_coarse_dev=xp.linspace(0,self.obs_bw,self.raw_params['num_chans'], endpoint=False)
         sim_len=blocks_to_read * data_size
 
@@ -200,150 +173,32 @@ class broadband(object):
 
                     data[::2]=data_chan_cmplx.real
                     data[1::2]=data_chan_cmplx.imag
-                    data.reshape(blocks_to_read, chan_size)
-
-
-                    for j in range(blocks_to_read):
-
-                        f.seek((start_block-1+j)*block_read_size, 0) 
-                        org.seek((start_block-1+j)*block_read_size, 0)
-
-                        f.seek(header_size, 1)
-                        org.seek(header_size, 1)
-
-                        block= xp.frombuffer(org.read(data_size), dtype=xp.int8).reshape(self.raw_params['num_chans'], chan_size)
-    #                        
-                        dispersed_chunk=block[i]+data[j]
-
-                        f.seek(i*chan_size, 1)
-                        f.write(xp.array(dispersed_chunk, dtype=xp.int8).tobytes())
-                
-                
-    #     def read_chan_ts(self, chan):
+                    self._write_(data, i)
+                    
+    
+    def _write_(self,chan_data, chan_no):
         
-#         blocks_to_read=np.ceil(self.smear/self.time_per_block)
-#         start_block=np.floor(self.pulse_time/self.time_per_block)
-        
-#         header=raw_utils.read_header(self.input_file_stem)
-#         header_size= int(512 * np.ceil((80 * (len(header) + 1)) / 512))
-#         data_size= int(self.raw_params['block_size'])
-        
-#         block_read_size =  header_size + data_size
-#         chan_ts=[]
-
-        
-#         with open(f'{self.input_file_stem}.0000.raw', 'rb') as f:
-            
-#             f.seek((start_block-1)*block_read_size, 0) 
-            
-#             for i in range(start_block,start_block+blocks_to_read):
-                
-#                 f.seek(header_size, 1)
-#                 block= xp.frombuffer(f.read(data_size), dtype=xp.int8)
-#                 block.reshape(self.raw_params['num_chans'], int(data_size/self.raw_params['num_chans']))
-#                 #try chan * blocksize
-#                 xp.append(chan_ts,block[chan])
-        
-#         return(chan_ts)
-         
-        
-# #check for neg chan bw 
-# #check for 2 pols 
-# # wb+: Opens a file for writing and reading in binary mode.
-
-        
-#     def disperse(self):
-        
-#         blocks_to_read=np.ceil(self.smear/self.time_per_block)
-#         f_coarse_dev=xp.linspace(0,self.obs_bw,self.raw_params['num_chans'], endpoint=False)
-#         sim_len=blocks_to_read * self.raw_params['block_size']
-        
-#         shutil.copyfile(self.input_file_stem, f'{self.input_file_stem}_dispersed.0000.raw')
-#         imp_length, nfft=self.impulse_length()
-        
-#         with open(f'{self.input_file_stem}_dispersed.0000.raw', 'wb') as f:
-
-#             data=xp.empty(self.raw_params['block_size']/self.raw_params['num_chans'],xp.int8)
-
-#             for i in range self.raw_params['num_chans']:
-
-#                 h=self.imp_res(f_coarse_dev[i], imp_length[i]) 
-
-# #                 data_chan_cmplx=overlapSave(pulse_complex,h,nfft)
-#                 data_chan_cmplx=xp.convolve(self.simulate_pulse(sim_len),h, mode='same')
-
-#                 data[::2]=data_chan_cmplx.real
-#                 data[1::2]=data_chan_cmplx.imag
-            
-#                 data=data+read_chan_ts(i)
-#                 ###
-#                 f.seek((start_block-1)*block_read_size, 0) 
-            
-#             for i in range(start_block,start_block+blocks_to_read):
-                
-#                 f.seek(header_size, 1)
-#                 block= xp.frombuffer(f.read(data_size), dtype=xp.int8)
-#                 block.reshape(self.raw_params['num_chans'], int(data_size/self.raw_params['num_chans']))
-#                 #try chan * blocksize
-#                 xp.append(chan_ts,block[chan])
-#                 ###
-                
-#                 g.write(xp.array(data, dtype=xp.int8).tobytes())
-     
-    def disperse(self):
-        ##
-        blocks_to_read=np.ceil(self.smear/self.time_per_block)
-        start_block=np.floor(self.pulse_time/self.time_per_block)
-        
-        header=raw_utils.read_header(self.input_file_stem)
-        header_size= int(512 * np.ceil((80 * (len(header) + 1)) / 512))
-        data_size= int(self.raw_params['block_size'])
-        chan_size=int(data_size/self.raw_params['num_chans'])
-        
-        block_read_size =  header_size + data_size
-        chan_ts=[]
-        
-#         blocks_to_read=np.ceil(self.smear/self.time_per_block)
-        f_coarse_dev=xp.linspace(0,self.obs_bw,self.raw_params['num_chans'], endpoint=False)
-        sim_len=blocks_to_read * data_size
-        
-        shutil.copyfile(self.input_file_stem, f'{self.input_file_stem}_dispersed.0000.raw')
-        imp_length, nfft=self.impulse_length()
+        chan_data.reshape(slef.blocks_to_read, slef.chan_size)
         
         with open(f'{self.input_file_stem}.0000.raw', 'rb') as org:
             with open(f'{self.input_file_stem}_dispersed.0000.raw', 'wb') as f:
+                
+                for j in range(self.blocks_to_read):
 
-                data=xp.empty(chan_size,xp.int8)
+                    f.seek((slef.start_block-1+j)*self.block_read_size, 0) 
+                    org.seek((self.start_block-1+j)*self.block_read_size, 0)
 
-                for i in range self.raw_params['num_chans']:
+                    f.seek(self.header_size, 1)
+                    org.seek(self.header_size, 1)
 
-                    h=self.imp_res(f_coarse_dev[i], imp_length[i]) 
+                    block= xp.frombuffer(org.read(self.data_size), dtype=xp.int8).reshape(self.raw_params['num_chans'], self.chan_size)
+            #                        
+                    dispersed_chunk=block[chan_no]+chan_data[j]
 
-    #                 data_chan_cmplx=overlapSave(pulse_complex,h,nfft)
-                    data_chan_cmplx=xp.convolve(self.simulate_pulse(sim_len),h, mode='same')
+                    f.seek(chan_no*self.chan_size, 1)
+                    f.write(xp.array(dispersed_chunk, dtype=xp.int8).tobytes())
 
-                    data[::2]=data_chan_cmplx.real
-                    data[1::2]=data_chan_cmplx.imag
-
-#                     data=data+read_chan_ts(i)
-                    ###
-                    f.seek((start_block-1)*block_read_size, 0) 
-                    org.seek((start_block-1)*block_read_size, 0) 
-
-                    for j in range(start_block,start_block+blocks_to_read):
-
-                        f.seek(header_size, 1)
-                        org.seek(header_size, 1)
-                        
-                        block= xp.frombuffer(org.read(data_size), dtype=xp.int8)
-                        block.reshape(self.raw_params['num_chans'], chan_size)
-                        #try chan * blocksize
-#                         xp.append(chan_ts,block[chan])
-                        ###
-                        dispersed_chunk=block[i]+data[j*chan_size:j*chan_size+chan_size]
-                        f.write(xp.array(dispersed_chunk, dtype=xp.int8).tobytes())
-
-
+                
 
     def imp_res(self, f_coarse_dev, imp_length):
 
@@ -419,10 +274,3 @@ class broadband(object):
             count = count + 1
 
         return(X)
-
-
-
-
-#     disperse(100,2048,30)
-
-
