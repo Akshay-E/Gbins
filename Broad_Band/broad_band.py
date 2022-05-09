@@ -25,6 +25,10 @@ class broadband(object):
         self.raw_params = raw_utils.get_raw_params(input_file_stem=input_file_stem)
         self.raw_params['fch1'], self.raw_params['chan_bw'], self.raw_params['center_freq'] = self.raw_params['fch1']/1e6, self.raw_params['chan_bw']/1e6, self.raw_params['center_freq']/1e6
         self.obs_bw= self.raw_params['num_chans'] * self.raw_params['chan_bw']
+        if self.raw_params['ascending']:
+            self.f_low= self.raw_params['fch1']
+        else:
+            self.f_low= self.raw_params['fch1'] + self.obs_bw
         
         self.input_file_stem=input_file_stem
         self.dm=dm
@@ -32,17 +36,20 @@ class broadband(object):
         self.snr=snr
         self.D=4.148808e3
         self.pulse_time=pulse_time
-        self.smear=self.calc_smear() 
         
-        assert self.pulse_time!=0 , f"injection time cannot be 0"
+        assert self.pulse_time > 0 , f"injection time cannot be 0"
         assert self.pulse_time < self.raw_params['obs_length'], f"injection time cannot be greater than length of file( {self.raw_params['obs_length']}) "
-    
+        
         self.blocks_per_file = raw_utils.get_blocks_per_file(input_file_stem)
         self.time_per_block = self.raw_params['block_size'] / (self.raw_params['num_antennas'] * self.raw_params['num_chans'] * (2 * self.raw_params['num_pols'] * self.raw_params['num_bits'] // 8)) * self.raw_params['tbin']
         
-        self.blocks_to_read=int(np.ceil(self.smear/self.time_per_block))
+        self.calc_smear() 
         
-        self.start_block= int(np.ceil(self.pulse_time/self.time_per_block))
+        self.adjust_time()
+        
+#         self.blocks_to_read=int(np.ceil(self.smear/self.time_per_block))
+        
+#         self.start_block= int(np.ceil(self.pulse_time/self.time_per_block))
         
 #         if self.raw_params['ascending']:
 #             self.adjusted_pulse_time=(self.start_block) * self.time_per_block
@@ -51,12 +58,6 @@ class broadband(object):
 #             self.adjusted_pulse_time=(self.start_block-1) * self.time_per_block
 #             assert self.adjusted_pulse_time + self.smear<self.raw_params['obs_length'], f"smearing across band({self.smear}) exceeds length of file({self.raw_params['obs_length']}) "
 
-        self.adjusted_pulse_time=(self.start_block) * self.time_per_block - self.time_per_block/2.0
-        assert self.adjusted_pulse_time - self.smear>=0, f"smearing across band({self.smear}) from adjusted pulses time({self.adjusted_pulse_time}) exceeds length of file({self.raw_params['obs_length']}) "
-        assert self.adjusted_pulse_time + self.smear<self.raw_params['obs_length'], f"smearing across band({self.smear}) from adjusted pulses time({self.adjusted_pulse_time}) exceeds length of file({self.raw_params['obs_length']}) "
-        
-        
-        print(f"Adjusted injection time for first channel: {round(self.adjusted_pulse_time,3)}")
         
         header=raw_utils.read_header(f'{self.input_file_stem}.0000.raw')
         
@@ -68,27 +69,46 @@ class broadband(object):
         self.sim_len= int(self.blocks_to_read * self.chan_size/2)
         shutil.copyfile(f'{self.input_file_stem}.0000.raw', f'{self.input_file_stem}_dispersed.0000.raw')
         
+    def adjust_time(self):
         
+        try :
+            assert self.adjusted_pulse_time > self.smear and self.adjusted_pulse_time < self.raw_params['obs_length'] 
+        
+        except AssertionError:
+            self.pulse_time=self.adjusted_pulse_time + self.smear
+            assert self.pulse_time  < self.raw_params['obs_length'], f"Smearing across the band exceeds length of file from adjusted pulse time. Try changing DM. "
+            print("WARNING: Smearing exceeds length of file. Adjusting pulse time...")
+            self.calc_smear()
+            
+        print(f"Adjusted injection time for channel {self.f_low} MHz {round(self.adjusted_pulse_time,3)}")
+        
+
     def calc_smear(self,x=2):
         
-        f_start=self.raw_params['fch1']
-        f_end=(self.raw_params['fch1'] + self.obs_bw)
+        f_end=self.f_low + abs(self.obs_bw)
         
-        if not self.raw_params['ascending']:
-            f_start, f_end = f_end, f_start
+        self.smear= self.D*self.dm*(self.f_low**-x - f_end**-x)
         
-        smear= self.D*self.dm*(f_start**-x - f_end**-x)
-        print(smear)
-        return(smear)
+#         self.blocks_per_file = raw_utils.get_blocks_per_file(self.input_file_stem)
+#         self.time_per_block = self.raw_params['block_size'] / (self.raw_params['num_antennas'] * self.raw_params['num_chans'] * (2 * self.raw_params['num_pols'] * self.raw_params['num_bits'] // 8)) * self.raw_params['tbin']
+        
+        self.blocks_to_read=int( 1 + np.ceil((self.smear-self.time_per_block/2) / self.time_per_block))
+        self.start_block= int(np.ceil(self.pulse_time/self.time_per_block))
+        
+        self.adjusted_pulse_time=(self.start_block) * self.time_per_block - self.time_per_block/2.0
+        
+        print(self.smear)
+#         return(smear)
     
     
+
     def gaussian(self, x, mu, std, C):
         
         denominator = xp.sqrt(2*xp.pi*std**2)
         numerator = xp.exp(-1*(x - mu)**2/(2*std**2))
         return C*(numerator/denominator)
     
-    def simulate_pulse(self, cmplx=True):
+    def simulate_pulse(self,  cmplx=True):
         
         x = xp.arange(self.width) #Span of Gaussian Pulse
         gaussian_window1 = self.gaussian(x, int(self.width/4), 50, 10000)
@@ -132,15 +152,20 @@ class broadband(object):
         
         print(f"writing chan {chan_no}")
         
+        blocks=self.blocks_to_read
         
-#         chan_data.reshape(self.blocks_to_read, self.chan_size)
-#         print(chan_data.shape)
+        if chan_data==self.chan_size:
+            chan_data=np.tile(chan_data,2)
+            blocks+=1
+            
+        chan_data.reshape(blocks, self.chan_size)
+        print(chan_data.shape)
 
         with open(f'{self.input_file_stem}_dispersed.0000.raw', 'r+b') as f:
 
             for j in range(self.blocks_to_read):
 
-                f.seek((self.start_block-1+j)*self.block_read_size, 0) 
+                f.seek((self.start_block-1-j)*self.block_read_size, 0) 
                 f.seek(self.header_size, 1)
 #                 print(f.tell()-self.header_size)
 
@@ -148,7 +173,7 @@ class broadband(object):
 #                 plt.plot(xp.asnumpy(chan_data))
 #                 plt.show()
 
-                dispersed_chunk=block[chan_no].astype(int)+chan_data
+                dispersed_chunk=block[chan_no].astype(int)+chan_data[j]
                 plt.plot(xp.asnumpy(dispersed_chunk).astype(xp.int8))
                 plt.show()
 
@@ -159,7 +184,6 @@ class broadband(object):
 
                 f.write(xp.array(dispersed_chunk, dtype=xp.int8).tobytes())
 
-    
     def clear_cache(self):
 
         mempool = xp.get_default_memory_pool()
@@ -175,9 +199,9 @@ class broadband(object):
 
     def chan_time_delay(self,x):
 
-        f_chan_arr= self.raw_params['fch1']+xp.linspace(0, self.obs_bw, self.raw_params['num_chans'], endpoint=False )
+        f_chan_arr= self.f_low+xp.linspace(0, abs(self.obs_bw), self.raw_params['num_chans'], endpoint=False )
         print(f_chan_arr)
-        chan_centr=f_chan_arr+self.raw_params['chan_bw']/2.0
+        chan_centr=f_chan_arr+abs(self.raw_params['chan_bw']/2.0)
         print(chan_centr)
         
         time_delay= self.D*self.dm*(chan_centr[0]**-x - chan_centr**-x)
@@ -187,22 +211,37 @@ class broadband(object):
         return(samples_to_shift)
 
 
-    def sample_shift(self,x=2 ):
+    def sample_shift(self,x=2 , b_type='N' ):
         
+        order=-1
+#         if not self.raw_params['ascending']:
+#             order=-1        
+        
+        if b_type=='N':
+            flip = not self.raw_params['ascending']
+        elif b_type=='A1':
+            flip = self.raw_params['ascending']
+        elif b_type=='A2':
+            order, flip = -1*order, self.raw_params['ascending']
+        elif b_type=='A3':
+            order, flip = -1*order, not self.raw_params['ascending']
+            
         if x!=2:
             
             smear_x=self.calc_smear(x)
-            assert self.adjusted_pulse_time + smear_x<self.raw_params['obs_length'], f"smearing across band({smear}) for x= {x} exceeds length of file({self.raw_params['obs_length']}) "
-
-        sample_shift=self.chan_time_delay(x)
-        gen_pulse=self.simulate_pulse(cmplx=False)
+            self.adjust_time()
         
-
-        for i in range (self.raw_params['num_chans']):
+#         sample_shift=self.chan_time_delay(x)
+#         gen_pulse=self.simulate_pulse(cmplx=False)
+        
+#         print(order, flip)
+        
+#         for i in range (self.raw_params['num_chans']):
             
-            v=xp.roll(gen_pulse, -2*self.raw_params['num_pols']*int(sample_shift[i]))
+#             roll_samples= 2 * order * self.raw_params['num_pols'] * int(sample_shift[i])
             
-            self._write_(v, i)
+#             v=xp.roll(gen_pulse, roll_samples)
+#             self._write_(v, i, flip)
             
 
 #dispersion by convolution 
@@ -266,20 +305,15 @@ class broadband(object):
     
     def imp_res(self, f_coarse_dev, imp_length):
         
-        if self.raw_params['ascending']:
-            f0= self.raw_params['fch1']
-        else:
-            f0= self.raw_params['fch1'] + self.obs_bw
+#         print(f_low)
         
-#         print(f0)
-        
-        K=2 * xp.pi * self.D *1e6 * self.dm / f0**2
+        K=2 * xp.pi * self.D *1e6 * self.dm / self.f_low**2
         
         fl = xp.linspace(0,np.abs(self.raw_params['chan_bw']), imp_length, endpoint=False) + f_coarse_dev
 #         print(fl)
-        V=fl**2/(fl+f0)
+        V=fl**2/(fl + self.f_low)
 
-        H= xp.exp(1j*K*V) 
+        H= xp.exp(1j * K * V) 
         return(xp.fft.ifft(H))
 
 
