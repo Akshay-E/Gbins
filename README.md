@@ -1,2 +1,7 @@
 # G_BINS
-Program for Narrow band/ Broad band signal injection into Guppi raw file
+Program for injecting natural and artificial broad band signals at raw volatge level into guppi raw files. 
+
+### Dispersion by convoltion 
+
+
+
