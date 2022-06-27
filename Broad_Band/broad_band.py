@@ -1,9 +1,11 @@
 import matplotlib.pyplot as plt 
 import os
-import sys
 import time 
 import shutil 
 from setigen.voltage import raw_utils
+import warnings
+import astropy.units as u
+import scipy
 
 try:
     import cupy as xp
@@ -17,9 +19,9 @@ class broadband(object):
     def __init__(self, 
                  input_file_stem,
                  pulse_time,
-                 dm=10, 
+                 dm=100, 
                  width=1000, 
-                 snr=100         
+                 snr=10      
                 ):
     
         self.raw_params = raw_utils.get_raw_params(input_file_stem=input_file_stem)
@@ -40,24 +42,47 @@ class broadband(object):
         assert self.pulse_time > 0 , f"injection time cannot be 0"
         assert self.pulse_time < self.raw_params['obs_length'], f"injection time cannot be greater than length of file( {self.raw_params['obs_length']}) "
         
-        self.blocks_per_file = raw_utils.get_blocks_per_file(input_file_stem)
-        self.time_per_block = self.raw_params['block_size'] / (self.raw_params['num_antennas'] * self.raw_params['num_chans'] * (2 * self.raw_params['num_pols'] * self.raw_params['num_bits'] // 8)) * self.raw_params['tbin']
         
         self.calc_smear() 
-        
         self.adjust_time()
+        self.file_params()
         
-#         self.blocks_to_read=int(np.ceil(self.smear/self.time_per_block))
+        print(f" Adjusted injection time for channel {self.f_low + abs(self.obs_bw)} MHz {round(self.adjusted_pulse_time,3)}")
         
-#         self.start_block= int(np.ceil(self.pulse_time/self.time_per_block))
+    
+    def calc_smear(self,x=2):
         
-#         if self.raw_params['ascending']:
-#             self.adjusted_pulse_time=(self.start_block) * self.time_per_block
-#             assert self.adjusted_pulse_time - self.smear>=0, f"smearing across band({self.smear}) exceeds length of file({self.raw_params['obs_length']}) "
-#         else:
-#             self.adjusted_pulse_time=(self.start_block-1) * self.time_per_block
-#             assert self.adjusted_pulse_time + self.smear<self.raw_params['obs_length'], f"smearing across band({self.smear}) exceeds length of file({self.raw_params['obs_length']}) "
+        f_end=self.f_low + abs(self.obs_bw)
+        
+        self.smear= self.D*self.dm*(self.f_low**-x - f_end**-x)
+        
+    
+    def adjust_time(self):
+        
+        self.blocks_per_file = raw_utils.get_blocks_per_file(self.input_file_stem)
+        self.time_per_block = self.raw_params['block_size'] / (self.raw_params['num_antennas'] * self.raw_params['num_chans'] * (2 * self.raw_params['num_pols'] * self.raw_params['num_bits'] // 8)) * self.raw_params['tbin']
 
+        self.blocks_to_read=int( np.ceil(self.smear/self.time_per_block))
+        self.start_block= int(np.ceil(self.pulse_time/self.time_per_block))
+        
+        self.adjusted_pulse_time=(self.start_block - 1) * self.time_per_block 
+
+        try :
+            
+            assert self.adjusted_pulse_time + self.smear < self.raw_params['obs_length'] 
+        
+        except AssertionError:
+            
+            self.pulse_time=self.raw_params['obs_length'] - self.smear
+            
+            assert self.pulse_time  > 0 , f"Smearing across the band ({round(self.smear, 3)}) exceeds length of file ({round(self.raw_params['obs_length'], 3)}) from adjusted pulse time ({round(self.adjusted_pulse_time, 2)}). Try changing DM. "
+            
+            warnings.warn('Smearing exceeds length of the file. Re-adjusting pulse time...')
+            
+            self.adjust_time()
+            
+
+    def file_params(self):
         
         header=raw_utils.read_header(f'{self.input_file_stem}.0000.raw')
         
@@ -66,316 +91,263 @@ class broadband(object):
         self.chan_size=int(self.data_size/self.raw_params['num_chans'])
         self.block_read_size =  self.header_size + self.data_size
         
-        self.sim_len= int(self.blocks_to_read * self.chan_size/2)
-        shutil.copyfile(f'{self.input_file_stem}.0000.raw', f'{self.input_file_stem}_dispersed.0000.raw')
-        
-    def adjust_time(self):
-        
-        try :
-            assert self.adjusted_pulse_time > self.smear and self.adjusted_pulse_time < self.raw_params['obs_length'] 
-        
-        except AssertionError:
-            self.pulse_time=self.adjusted_pulse_time + self.smear
-            assert self.pulse_time  < self.raw_params['obs_length'], f"Smearing across the band exceeds length of file from adjusted pulse time. Try changing DM. "
-            print("WARNING: Smearing exceeds length of file. Adjusting pulse time...")
-            self.calc_smear()
-            
-        print(f"Adjusted injection time for channel {self.f_low} MHz {round(self.adjusted_pulse_time,3)}")
-        
 
-    def calc_smear(self,x=2):
-        
-        f_end=self.f_low + abs(self.obs_bw)
-        
-        self.smear= self.D*self.dm*(self.f_low**-x - f_end**-x)
-        
-#         self.blocks_per_file = raw_utils.get_blocks_per_file(self.input_file_stem)
-#         self.time_per_block = self.raw_params['block_size'] / (self.raw_params['num_antennas'] * self.raw_params['num_chans'] * (2 * self.raw_params['num_pols'] * self.raw_params['num_bits'] // 8)) * self.raw_params['tbin']
-        
-        self.blocks_to_read=int( 1 + np.ceil((self.smear-self.time_per_block/2) / self.time_per_block))
-        self.start_block= int(np.ceil(self.pulse_time/self.time_per_block))
-        
-        self.adjusted_pulse_time=(self.start_block) * self.time_per_block - self.time_per_block/2.0
-        
-        print(self.smear)
-#         return(smear)
-    
-    
-
-    def gaussian(self, x, mu, std, C):
-        
-        denominator = xp.sqrt(2*xp.pi*std**2)
-        numerator = xp.exp(-1*(x - mu)**2/(2*std**2))
-        return C*(numerator/denominator)
-    
-    def simulate_pulse(self,  cmplx=True):
-        
-        x = xp.arange(self.width) #Span of Gaussian Pulse
-        gaussian_window1 = self.gaussian(x, int(self.width/4), 50, 10000)
-        gaussian_window2 = self.gaussian(x, int(3*self.width/4), 50, 20000)
-        gaussian_window = 1+ gaussian_window1 + gaussian_window2
-        scale_factors = xp.sqrt(2)*gaussian_window
-        noise = xp.random.normal(0,1,self.sim_len)
-        
-#         if self.raw_params['ascending']:
-#             loc=self.sim_len-2*self.width
-#         else:
-#             loc=2*self.width
-        loc=self.sim_len/2
-            
-        for i in range(self.width):
-            if scale_factors[i] >= 1:
-                noise[(int)(loc) + i] *= scale_factors[i]
-            else:
-                continue
-        
-        if cmplx:
-            final_arr = noise+1j*noise
-        else:
-            final_arr = xp.zeros(2*self.sim_len)
-            final_arr[::2] = noise
-            final_arr[1::2] = noise
-        
-        ax1 = plt.subplot(211)
-        ax1.plot(xp.asnumpy(gaussian_window))
-        ax2 = plt.subplot(212)
-        ax2.plot(xp.asnumpy(final_arr.real))
-        plt.show()
-        
-        return final_arr
-    
-    
-    def _write_(self,chan_data, chan_no, reverse=False):
-         
-        if reverse:
-            chan_no= self.raw_params['num_chans'] - 1 - chan_no
-        
-        print(f"writing chan {chan_no}")
-        
-        blocks=self.blocks_to_read
-        
-        if chan_data==self.chan_size:
-            chan_data=np.tile(chan_data,2)
-            blocks+=1
-            
-        chan_data.reshape(blocks, self.chan_size)
-        print(chan_data.shape)
-
-        with open(f'{self.input_file_stem}_dispersed.0000.raw', 'r+b') as f:
-
-            for j in range(self.blocks_to_read):
-
-                f.seek((self.start_block-1-j)*self.block_read_size, 0) 
-                f.seek(self.header_size, 1)
-#                 print(f.tell()-self.header_size)
-
-                block= xp.frombuffer(f.read(self.data_size), dtype=xp.int8).reshape(self.raw_params['num_chans'], self.chan_size)
-#                 plt.plot(xp.asnumpy(chan_data))
-#                 plt.show()
-
-                dispersed_chunk=block[chan_no].astype(int)+chan_data[j]
-                plt.plot(xp.asnumpy(dispersed_chunk).astype(xp.int8))
-                plt.show()
-
-                f.seek(-self.data_size, 1)
-#                 print(f.tell()-self.header_size)
-                f.seek(chan_no*self.chan_size, 1)
-#                 print(f.tell()-self.header_size)
-
-                f.write(xp.array(dispersed_chunk, dtype=xp.int8).tobytes())
-
-    def clear_cache(self):
-
-        mempool = xp.get_default_memory_pool()
-        print(mempool.used_bytes()/(1024*1024))             
-        print(mempool.total_bytes()/(1024*1024)) 
-
-        mempool.free_all_blocks()
-        print(mempool.used_bytes()/(1024*1024))              
-        print(mempool.total_bytes()/(1024*1024)) 
-
-        
-#dispersion by sample shifting 
+# Dispersion by sample shifting 
 
     def chan_time_delay(self,x):
 
-        f_chan_arr= self.f_low+xp.linspace(0, abs(self.obs_bw), self.raw_params['num_chans'], endpoint=False )
-        print(f_chan_arr)
+        f_chan_arr= self.f_low+np.linspace(0, abs(self.obs_bw), self.raw_params['num_chans'], endpoint=False )
         chan_centr=f_chan_arr+abs(self.raw_params['chan_bw']/2.0)
-        print(chan_centr)
         
-        time_delay= self.D*self.dm*(chan_centr[0]**-x - chan_centr**-x)
-        print(time_delay, len(time_delay))
+        time_delay= self.D*self.dm*(chan_centr**-x - chan_centr[-1]**-x)
         samples_to_shift=np.ceil(time_delay/self.raw_params['tbin'])
-        print(samples_to_shift)
+        
         return(samples_to_shift)
 
-
-    def sample_shift(self,x=2 , b_type='N' ):
+    
+    @classmethod
+    def gauss(cls, x=None, x0=None, fwhm=None, a=None, width=None):
+    
+        if x is None:
+            x=np.arange(width)
+        if x0 is None:
+            x0=width/2
+        if a is None:
+            a=self.snr
+        if fwhm is None:
+            fwhm=width/2
+            
+        sigma = (fwhm/2) / np.sqrt(2*np.log(2))
+        G= a  * np.exp(-(x-x0)**2 / (2*sigma**2))
+#         plt.plot(G)
+#         plt.show()
+        return G
+    
+    def sample_shift(self, x=2 , b_type='N' ):
         
-        order=-1
-#         if not self.raw_params['ascending']:
-#             order=-1        
+        shutil.copyfile(f'{self.input_file_stem}.0000.raw', f'{self.input_file_stem}_dispersed.0000.raw')
+        chan_flip=False
         
         if b_type=='N':
             flip = not self.raw_params['ascending']
         elif b_type=='A1':
             flip = self.raw_params['ascending']
         elif b_type=='A2':
-            order, flip = -1*order, self.raw_params['ascending']
+            chan_flip, flip = not chan_flip, self.raw_params['ascending']
         elif b_type=='A3':
-            order, flip = -1*order, not self.raw_params['ascending']
+            chan_flip, flip = not chan_flip, not self.raw_params['ascending']
+        else:
+            raise Exception("Invalid plot type ")
             
         if x!=2:
-            
-            smear_x=self.calc_smear(x)
+            self.calc_smear(x)
             self.adjust_time()
         
-#         sample_shift=self.chan_time_delay(x)
-#         gen_pulse=self.simulate_pulse(cmplx=False)
+        td_in_samps=self.chan_time_delay(x)
         
-#         print(order, flip)
-        
-#         for i in range (self.raw_params['num_chans']):
-            
-#             roll_samples= 2 * order * self.raw_params['num_pols'] * int(sample_shift[i])
-            
-#             v=xp.roll(gen_pulse, roll_samples)
-#             self._write_(v, i, flip)
-            
+        samples_per_chan=int(self.chan_size/(2*self.raw_params['num_pols']))
 
-#dispersion by convolution 
-
-    def impulse_length(self):
+        if flip:  
+            td_in_samps=np.flip(td_in_samps)
+        if chan_flip:
+            td_in_samps=samples_per_chan*self.blocks_to_read - td_in_samps -self.width
         
-        if self.raw_params['ascending']:
-            f_lower= self.raw_params['fch1']
-        else:
-            f_lower= self.raw_params['fch1'] + self.obs_bw
-#             reverse=True
+        with open(f'{self.input_file_stem}_dispersed.0000.raw', 'r+b') as self.file_handler:
+
+            self.file_handler.seek((self.start_block-1) * self.block_read_size, 0)
+
+            print(f" At {self.file_handler.tell()}")
+
+            block_cmplx=self.collect_data()
             
-        
-        f_chan_start= f_lower + xp.linspace(0, np.abs(self.obs_bw), self.raw_params['num_chans'], endpoint=False)
-        print(f_chan_start)
+            pulse_profile=broadband.gauss(a=self.snr, width=self.width)
 
-        t_d=self.D*self.dm*(f_chan_start**-2 - (f_chan_start+np.abs(self.raw_params['chan_bw']))**-2)
+            for i in range(self.raw_params['num_chans']):
+            
+                s= int(td_in_samps[i])
+                e= int(td_in_samps[i]+self.width)
+
+                block_cmplx[i][s:e]*=pulse_profile
+            
+            self.write_blocks(block_cmplx)
+        
+
+    @classmethod
+    def disperse_filterbank(cls, frame, params, b_type='N', save=True):
+        
+        width, snr, t0, dm,x = params['width'], params['snr'], params['t0'], params['dm'], params.get('x',2)
+
+        rms  = frame.get_intensity(snr=snr)
+        fch1 = frame.get_frequency(frame.fchans-1)
+
+        width_in_chans = width / frame.dt
+        t0_in_samps = (t0 / frame.dt) - frame.ts[0]
+        
+#         print(t0_in_samps)
+        # tdel_in_samps = 4.15e-3 * dm * ((fch1/1e9)**(-2) - (frame.fs/1e9)**(-2)) / frame.dt
     
-        print(t_d, len(t_d))
+        tdel_in_samps = 4.15e-3 * dm * ((frame.fs/1e9)**(-x) - (fch1/1e9)**(-x)) / frame.dt
+        t0_in_samps = t0_in_samps + tdel_in_samps 
 
-        imp_length=np.ceil(t_d/self.raw_params['tbin'])
+        t = np.arange(frame.tchans)
 
-        n=xp.floor(xp.log(2*imp_length)/xp.log(2))
-        nfft=2**n
+        t2d, tdel2d = np.meshgrid(t, t0_in_samps)
+
+        profile = broadband.gauss(t2d, tdel2d, width_in_chans, rms)
         
-        return(imp_length, nfft)
+        if b_type=='N':
+            pass
+        if b_type=='A1':
+            profile=np.flip(profile)
+        if b_type=='A2':
+            profile=np.flip(profile, axis=0)
+        if b_type=='A3':
+            profile=np.flip(profile, axis=1)
+        
+        
+        frame.data +=profile.T
 
+        plt.figure(figsize=(10,6))
+        frame.plot()
+        
+        if save:
+            frame.save_fil(filename='./data/dispersed_frame.fil')
+
+        return(frame.data)
+
+
+#Dispersion by Convolution
+    
+    def imp_res(self, imp_length):
+        
+        f_coarse_dev=np.linspace(0,np.abs(self.obs_bw),self.raw_params['num_chans'], endpoint=False)
+        H=np.empty((self.raw_params['num_chans'], imp_length), dtype=complex)
+        
+        for i in range(self.raw_params['num_chans']):
+            
+            K=2 * xp.pi * self.D *1e6 * self.dm / self.f_low**2
+
+            fl = xp.linspace(0,np.abs(self.raw_params['chan_bw']), imp_length, endpoint=False) + f_coarse_dev[i]
+            V=fl**2/(fl + self.f_low)
+
+            H[i]= xp.asnumpy ( xp.fft.ifft ( xp.exp(1j * K * V ) ))
+
+        if not self.raw_params['ascending']:
+            H=np.flip(H, axis=0)
+            
+        return(H)
+
+        
     def disperse(self):
         
-        f_coarse_dev=xp.linspace(0,np.abs(self.obs_bw),self.raw_params['num_chans'], endpoint=False)
-        print(f_coarse_dev)
+        shutil.copyfile(f'{self.input_file_stem}.0000.raw', f'{self.input_file_stem}_dispersed.0000.raw')
 
-#         imp_length, nfft=self.impulse_length()
-#         print(imp_length, max(imp_length))
-        
-        data=xp.empty(self.chan_size,float)
-        
-        gen_pulse=self.simulate_pulse()
+        impulse_len=int(np.ceil(self.smear/self.raw_params['tbin']))
 
-        qq=int(np.ceil(self.smear/self.raw_params['tbin']))
-        print(qq)
-        
-        for i in range (self.raw_params['num_chans']):
-#         for i in range (0,self.raw_params['num_chans'],20):
+        print(f"imp length:{impulse_len}")
 
-            h=self.imp_res(f_coarse_dev[i], qq) 
+        pulse_profile=self.gauss()
 
-#                 data_chan_cmplx=overlapSave(pulse_complex,h,nfft)
-            data_chan_cmplx=xp.convolve(gen_pulse,h, mode='same')
-#             ddd=xp.convolve(gen_pulse_complex,h, mode='full')
-
-            data[::2]=data_chan_cmplx.real
-            data[1::2]=data_chan_cmplx.imag
+        with open(f'{self.input_file_stem}_dispersed.0000.raw', 'r+b') as self.file_handler:
             
-#             plt.plot(xp.asnumpy(xp.abs(data_chan_cmplx)), label=str(i))
-#             plt.legend(title=str(i))
-#             plt.plot(xp.asnumpy(xp.fft.fftshift(h)))
-#             plt.show()
-            self._write_(data, i,not self.raw_params['ascending'])
-                    
+            self.file_handler.seek((self.start_block-1) * self.block_read_size, 0)
+
+            print(f" At {self.file_handler.tell()}")
     
-    def imp_res(self, f_coarse_dev, imp_length):
+            block_cmplx=self.collect_data()
+            block_cmplx[ :, :self.width ]*=pulse_profile
+            
+            block_cmplx, conv_mode=self.pad(block_cmplx, impulse_len)
+            h=self.imp_res( impulse_len) 
+            
+            dispersed_ts=scipy.signal.fftconvolve(block_cmplx, h, mode=conv_mode, axes=1)
+#             print(block_cmplx.shape, h.shape, dispersed_ts.shape)
+            
+#             for k in range(0,64,30):
+#                 plt.figure(figsize = (10,6))
+#                 a1=plt.subplot(311)
+#                 a1.plot(block_cmplx[k].real)
+
+#                 a2=plt.subplot(312)
+#                 a2.plot( h[k].real)
+
+#                 a3=plt.subplot(313)
+#                 a3.plot(dispersed_ts[k].real)
+#                 plt.show()
+            
+            self.write_blocks(dispersed_ts)
+
+
+    def collect_data(self, _from=None, to=None):
         
-#         print(f_low)
+        if _from is None:
+            _from=self.start_block
+        if to is None:
+            to=self.blocks_to_read
         
-        K=2 * xp.pi * self.D *1e6 * self.dm / self.f_low**2
+        block= (np.frombuffer(self.file_handler.read(self.block_read_size),offset=self.header_size
+                              , dtype=np.int8)).reshape(self.raw_params['num_chans'],self.chan_size)
+        block=block.astype(float)
+        print(f"seek first bl {self.file_handler.tell()}")
+
+        for i in range(1,self.blocks_to_read):
+
+            nxt_block= (np.frombuffer(self.file_handler.read(self.block_read_size),offset=self.header_size
+                          , dtype=np.int8)).reshape(self.raw_params['num_chans'],self.chan_size)
+            nxt_block=nxt_block.astype(float)
+
+            block=np.hstack((block, nxt_block))
         
-        fl = xp.linspace(0,np.abs(self.raw_params['chan_bw']), imp_length, endpoint=False) + f_coarse_dev
-#         print(fl)
-        V=fl**2/(fl + self.f_low)
-
-        H= xp.exp(1j * K * V) 
-        return(xp.fft.ifft(H))
-
-
-    def overlapSave(self, x,h,N,mode='full'): # N: number of FFT points
-
-    #     Inputs:
-    #     x - input sequence
-    #     h - input impulse response
-    #     N - number of FFT points
-    #     mode - {'full','valid'}
-    #            'full': outputs len(x)+len(h)-1
-    #            'vaild': outputs data excludes leading and trailing zeros
-    #                    the output length will be max(len(x),len(h)) - min(len(x),len(h)) + 1
-
-        Lx = len(x)
-        M = len(h)
-        L = N-M+1
-
-        hp = xp.append(h,xp.zeros(L-1))
-        X = getBlockMatrix(x,L,M)
-        FX = xp.fft.fft(X,axis=0)
-        Fhp = xp.fft.fft(hp)
-        FHp = xp.transpose(xp.tile(Fhp,(X.shape[1],1)))
-        FY = xp.multiply(FX,FHp)
-        Y_aliased = xp.fft.ifft(FY,axis=0) 
-        Y = Y_aliased[xp.arange(M-1,N),:]
-        y_vector = xp.ravel(Y,order='F')
-    #     y = y_vector[0:Lx]
-    #     print(len(y_vector))
-    #     y = y_vector[2852:Lx+2852]
-
-        if mode=='full':
-            y = y_vector[0:Lx+M-1]
-        elif mode=='valid':
-            N_valid = max(len(x),len(h)) - min(len(x),len(h)) + 1 
-            N_extra = N - N_valid
-            N_lead = int(xp.floor(N_extra/2))
-            #N_trail = int(xp.ceil(N_extra/2))
-            y = y_vector[0:Lx+M-1]
-    #         y = y1[xp.arange(N_lead,N_valid+1)]  
-    #         y = y1[xp.arange(0,N_valid+1)]
-        return(y)
-
-    def getBlockMatrix(self, x,L,M):
-
-        Lx = len(x)
-        N = L+M-1
-        Ly = Lx+M-1
-
-        xc = xp.append(x,xp.zeros(L+M-1))
-        xd = xp.append(xp.zeros(M-1),xc)
-
-
-        if Ly%L != 0:
-            ncols = (Ly//L) + 1
+        print(f"seek end {self.file_handler.tell()}")
+        
+        block_cmplx=block[: , ::2] + 1j*block[: , 1::2]
+        
+        return(block_cmplx)
+        
+        
+        
+    def pad(self, L, il):
+        
+        print('pad ',self.file_handler.tell())
+        pad_start_block= self.start_block - self.blocks_to_read
+        
+        if pad_start_block<1:
+            warnings.warn('Incomplete data points for padding. Boundary effects of convolution will be visible.')
+            mode='same'
+            return(L, mode)
+       
         else:
-            ncols = (Ly//L)
+            self.file_handler.seek((pad_start_block-1) * self.block_read_size, 0)
+            cmplx_data=self.collect_data(pad_start_block)
+            
+            M_1= cmplx_data[:, 1-il:]
+            
+            padded_block=np.hstack((M_1, L) )
+            mode='valid'
+            return(padded_block, mode)
+    
+    
+    def write_blocks(self, data_chunk):
+        
+        self.file_handler.seek((self.start_block-1) * self.block_read_size, 0)
+        
+        final_data=np.empty((self.data_size))
+        print('writing',self.file_handler.tell())
 
-        X = xp.zeros([N,ncols], dtype=complex)
-        count = 0
-        for i in xp.arange(0,Ly-1,L):
-            X[:,count] = xd[i:i+N]
-            count = count + 1
+        for i in range(self.blocks_to_read):
+            
+            self.file_handler.seek(self.header_size, 1)
+            
+            s=int(i*self.chan_size/2)
+            e=int(i*self.chan_size/2 + self.chan_size/2)
 
-        return(X)
+            block_i=data_chunk[:, s:e]
+            
+            final_data[::2]=np.ravel(block_i.real)
+            final_data[1::2]=np.ravel(block_i.imag)
+            
+            self.file_handler.write(np.array(final_data, dtype=np.int8).tobytes())
+            print('writ block i',self.file_handler.tell())
+            
+            
+            
