@@ -107,25 +107,27 @@ class broadband(object):
     
     @classmethod
     def gauss(cls, x=None, x0=None, fwhm=None, a=None, width=None):
-    
+#         print(x, x0, fwhm, a)
         if x is None:
             x=np.arange(width)
         if x0 is None:
             x0=width/2
-        if a is None:
-            a=self.snr
         if fwhm is None:
             fwhm=width/2
             
         sigma = (fwhm/2) / np.sqrt(2*np.log(2))
+        
+        if a is None:
+            a= 1/(sigma*np.sqrt(2*np.pi))
+        
         G= a  * np.exp(-(x-x0)**2 / (2*sigma**2))
 #         plt.plot(G)
 #         plt.show()
         return G
     
-    def sample_shift(self, x=2 , b_type='N' ):
+    def sample_shift(self, x=2 , b_type='N', op_dir=None, profile=None):
         
-        shutil.copyfile(f'{self.input_file_stem}.0000.raw', f'{self.input_file_stem}_dispersed.0000.raw')
+        path, pulse_profile= self.dispatcher(op_dir, profile)
         chan_flip=False
         
         if b_type=='N':
@@ -152,7 +154,7 @@ class broadband(object):
         if chan_flip:
             td_in_samps=samples_per_chan*self.blocks_to_read - td_in_samps -self.width
         
-        with open(f'{self.input_file_stem}_dispersed.0000.raw', 'r+b') as self.file_handler:
+        with open(path, 'r+b') as self.file_handler:
 
             self.file_handler.seek((self.start_block-1) * self.block_read_size, 0)
 
@@ -176,6 +178,8 @@ class broadband(object):
     def disperse_filterbank(cls, frame, params, b_type='N', save=True):
         
         width, snr, t0, dm,x = params['width'], params['snr'], params['t0'], params['dm'], params.get('x',2)
+        
+        assert t0<frame.ts[-1], f"Start time {t0} seconds exceeds length of the file, {frame.ts[-1]} seconds"
 
         rms  = frame.get_intensity(snr=snr)
         fch1 = frame.get_frequency(frame.fchans-1)
@@ -183,7 +187,6 @@ class broadband(object):
         width_in_chans = width / frame.dt
         t0_in_samps = (t0 / frame.dt) - frame.ts[0]
         
-#         print(t0_in_samps)
         # tdel_in_samps = 4.15e-3 * dm * ((fch1/1e9)**(-2) - (frame.fs/1e9)**(-2)) / frame.dt
     
         tdel_in_samps = 4.15e-3 * dm * ((frame.fs/1e9)**(-x) - (fch1/1e9)**(-x)) / frame.dt
@@ -236,44 +239,73 @@ class broadband(object):
             H=np.flip(H, axis=0)
             
         return(H)
+    
 
+    def dispatcher(self, op_dir, profile):
         
-    def disperse(self):
+        if profile is None:
+            profile=broadband.gauss(a=self.snr, width=self.width)
+        else:
+            self.width=len(profile)
         
-        shutil.copyfile(f'{self.input_file_stem}.0000.raw', f'{self.input_file_stem}_dispersed.0000.raw')
-
+        if op_dir is None:
+            path=os.path.join(os.getcwd(), f'{self.input_file_stem}_dispersed.0000.raw')
+        else:
+            path=os.path.join(op_dir, f'{self.input_file_stem}_dispersed.0000.raw')
+        
+        shutil.copyfile(f'{self.input_file_stem}.0000.raw', path )
+        
+        return(path, profile)
+    
+        
+    def disperse(self, op_dir=None, profile=None, plot=False, plot_alt=None):
+        
+        path, pulse_profile= self.dispatcher(op_dir, profile)
+        
         impulse_len=int(np.ceil(self.smear/self.raw_params['tbin']))
 
         print(f"imp length:{impulse_len}")
 
-        pulse_profile=self.gauss()
-
-        with open(f'{self.input_file_stem}_dispersed.0000.raw', 'r+b') as self.file_handler:
+        with open(path, 'r+b') as self.file_handler:
             
             self.file_handler.seek((self.start_block-1) * self.block_read_size, 0)
 
             print(f" At {self.file_handler.tell()}")
     
             block_cmplx=self.collect_data()
-            block_cmplx[ :, :self.width ]*=pulse_profile
             
+            if self.start_block - self.blocks_to_read<1:
+                block_cmplx[ :,(block_cmplx.shape[1])//2:(block_cmplx.shape[1])//2+self.width ]*=pulse_profile
+            else:
+                block_cmplx[ :, :self.width ]*=pulse_profile
+                
             block_cmplx, conv_mode=self.pad(block_cmplx, impulse_len)
             h=self.imp_res( impulse_len) 
             
             dispersed_ts=scipy.signal.fftconvolve(block_cmplx, h, mode=conv_mode, axes=1)
 #             print(block_cmplx.shape, h.shape, dispersed_ts.shape)
-            
-#             for k in range(0,64,30):
-#                 plt.figure(figsize = (10,6))
-#                 a1=plt.subplot(311)
-#                 a1.plot(block_cmplx[k].real)
 
-#                 a2=plt.subplot(312)
-#                 a2.plot( h[k].real)
+            if plot:
+                if plot_alt is None:
+                    plot_alt=1
+        
+                for k in range(0,self.raw_params['num_chans'],plot_alt):
+                
+                    plt.figure(figsize = (10,6))
+                    a1=plt.subplot(311)
+                    a1.title.set_text(f'Generated pulse, channel {k}')
+                    a1.plot(block_cmplx[k].real)
 
-#                 a3=plt.subplot(313)
-#                 a3.plot(dispersed_ts[k].real)
-#                 plt.show()
+                    a2=plt.subplot(312)
+                    a2.title.set_text('Impulse response of ISM')
+                    a2.plot( h[k].real)
+
+                    a3=plt.subplot(313)
+                    a3.title.set_text('Dispersed pulse')
+                    a3.plot(dispersed_ts[k].real)
+                    
+                    plt.setp((a1,a2,a3), xticks=[])
+                    plt.show()
             
             self.write_blocks(dispersed_ts)
 
@@ -303,7 +335,6 @@ class broadband(object):
         block_cmplx=block[: , ::2] + 1j*block[: , 1::2]
         
         return(block_cmplx)
-        
         
         
     def pad(self, L, il):
