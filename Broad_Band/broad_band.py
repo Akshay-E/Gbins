@@ -8,6 +8,8 @@ if GPU_FLAG == '1':
         import cupy as xp
     except ImportError:
         import numpy as xp
+else:
+    import numpy as xp
 
 import numpy as np
 import astropy.units as u
