@@ -1,25 +1,3 @@
-import os
-import shutil 
-
-GPU_FLAG = os.getenv('SETIGEN_ENABLE_GPU', '0')
-
-if GPU_FLAG == '1':
-    try:
-        import cupy as xp
-    except ImportError:
-        import numpy as xp
-else:
-    import numpy as xp
-
-import numpy as np
-import astropy.units as u
-import warnings
-import scipy
-from setigen.voltage import raw_utils
-import setigen as stg 
-import logging
-import matplotlib.pyplot as plt
-
 logger = logging.getLogger()
 fhandler = logging.FileHandler(filename='broadband_log.log', mode='w')
 logger.addHandler(fhandler)
@@ -182,6 +160,11 @@ class broadband(object):
             2D array of impulse response for the data
 
         """
+        def to_numpy_array(data):
+                try:
+                    return xp.asnumpy(v)
+                except AttributeError:
+                    return data
         
         f_coarse_dev=np.linspace(0,np.abs(self.obs_bw),self.raw_params['num_chans'], endpoint=False)
         H=np.empty((self.raw_params['num_chans'], imp_length), dtype=complex)
@@ -192,16 +175,16 @@ class broadband(object):
 
             fl = xp.linspace(0,np.abs(self.raw_params['chan_bw']), imp_length, endpoint=False) + f_coarse_dev[i]
             V=fl**2/(fl + self.f_low)
-
-            H[i]= xp.asnumpy ( xp.fft.ifft ( xp.exp(1j * K * V ) ))
-
+            
+            H[i]= to_numpy_array( xp.fft.ifft ( xp.exp(1j * K * V ) ))
+        
         if not self.raw_params['ascending']:
             H=np.flip(H, axis=0)
         
         logger.info(f"Generated impulse response array for {self.raw_params['num_chans']} channels")
         
         return(H)
-    
+        
     
     def pad(self, L, il):
         """
@@ -299,7 +282,7 @@ class broadband(object):
             else:
                 block_cmplx[ :, :self.num_pols*self.width:self.num_pols ]*=pulse_profile
                 
-            logger.info(f" Padding complex time series with (impulse_length-1) samples from previous blocks for convolution  ")
+            logger.info(f"Padding complex time series with (impulse_length-1) samples.")
             block_cmplx, conv_mode=self.pad(block_cmplx, impulse_len)
             
             h=self.imp_res( impulse_len)
@@ -366,26 +349,27 @@ class broadband(object):
             Convolved complex output 
 
         """
+        if GPU_FLAG==1:
+            try:
+                from cupyx.scipy import signal
 
-        try:
-            from cupyx.scipy import signal
-            
-            if mode=='same':
-                dispersed_ts=np.empty((data_cmplx.shape), dtype=complex)
-            else:
-                dispersed_ts=np.empty((data_cmplx.shape[0], data_cmplx.shape[1] - response.shape[1]+1), dtype=complex) 
+                if mode=='same':
+                    dispersed_ts=np.empty((data_cmplx.shape), dtype=complex)
+                else:
+                    dispersed_ts=np.empty((data_cmplx.shape[0], data_cmplx.shape[1] - response.shape[1]+1), dtype=complex) 
 
-            for i in range(self.raw_params['num_chans']):
-                dispersed_ts[i]=xp.asnumpy(signal.fftconvolve(xp.array(data_cmplx[i]), xp.array(response[i]), mode=mode))    
-           
-        except ImportError:
-            
-            logger.warning(f"Recommended to install CuPy. This is not necessary for injection, but will highly accelerate the pipeline")
-            
+                for i in range(self.raw_params['num_chans']):
+                    dispersed_ts[i]=xp.asnumpy(signal.fftconvolve(xp.array(data_cmplx[i]), xp.array(response[i]), mode=mode))    
+
+            except ImportError:
+
+                logger.warning(f"Recommended to install CuPy. This is not necessary for injection, but will highly accelerate the pipeline")
+                dispersed_ts=scipy.signal.fftconvolve(data_cmplx, response, mode=mode, axes=1)
+        else:
+            logger.debug(f"GPU not enabled")
             dispersed_ts=scipy.signal.fftconvolve(data_cmplx, response, mode=mode, axes=1)
-            
+
         logger.info(f"Convolution complete")
-            
         return(dispersed_ts)    
 
 
@@ -740,14 +724,3 @@ class broadband(object):
             frame.save_fil(filename = loc)
 
         return(frame.data)
-
-
-   
-            
-
-
-
-
-            
-            
-
