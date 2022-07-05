@@ -1,18 +1,38 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jul  5 14:07:01 2022
+
+@author: Akshay_Eranhalodi
+
+"""
 import matplotlib.pyplot as plt 
 import os
+import sys
 import time 
 import shutil 
-from setigen.voltage import raw_utils
-import warnings
-import astropy.units as u
-import scipy
 
-try:
-    import cupy as xp
-except ImportError:
-    import numpy as xp
+GPU_FLAG = os.getenv('SETIGEN_ENABLE_GPU', '0')
+
+if GPU_FLAG == '1':
+    try:
+        import cupy as xp
+    except ImportError:
+        import numpy as xp
+
 import numpy as np
+import astropy.units as u
+import warnings
+import scipy
+from setigen.voltage import raw_utils
+import setigen as stg 
+import logging
 
+logger = logging.getLogger()
+fhandler = logging.FileHandler(filename='broadband_log.log', mode='w')
+logger.addHandler(fhandler)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(lineno)s - %(message)s')
+fhandler.setFormatter(formatter)
 
 class broadband(object):
     
@@ -23,8 +43,28 @@ class broadband(object):
                  width=1000, 
                  snr=10      
                 ):
-    
+        """
+        Parameters
+        ----------
+        input_file_stem : str
+            Filename or path stem to input RAW data 
+        pulse_time : int
+            Start time for injected signal
+        dm : float, optional
+            Dispersion measure. The default is 100.
+        width : int, optional
+            Total span of the pulse profile to be generated in samples. The default is 1000.
+            If custom pulse profile is used, width is calculated accordingly.
+        snr : float, optional
+            Desired signal to noise ratio of injected signal at raw voltage level. The default is 10.
+
+        Returns
+        -------
+        None.
+
+        """
         self.raw_params = raw_utils.get_raw_params(input_file_stem=input_file_stem)
+        self.num_pols=int(self.raw_params['num_pols'])
         self.raw_params['fch1'], self.raw_params['chan_bw'], self.raw_params['center_freq'] = self.raw_params['fch1']/1e6, self.raw_params['chan_bw']/1e6, self.raw_params['center_freq']/1e6
         self.obs_bw= self.raw_params['num_chans'] * self.raw_params['chan_bw']
         if self.raw_params['ascending']:
@@ -34,10 +74,10 @@ class broadband(object):
         
         self.input_file_stem=input_file_stem
         self.dm=dm
-        self.width=width
+        self.width=int(width)
         self.snr=snr
         self.D=4.148808e3
-        self.pulse_time=pulse_time
+        self.pulse_time=int(pulse_time)
         
         assert self.pulse_time > 0 , f"injection time cannot be 0"
         assert self.pulse_time < self.raw_params['obs_length'], f"injection time cannot be greater than length of file( {self.raw_params['obs_length']}) "
@@ -48,9 +88,23 @@ class broadband(object):
         self.file_params()
         
         print(f" Adjusted injection time for channel {self.f_low + abs(self.obs_bw)} MHz {round(self.adjusted_pulse_time,3)}")
+        logger.info("Object initialisation passed")
         
     
     def calc_smear(self,x=2):
+        """
+        Calculate smearing in the band based on the desired power law.
+
+        Parameters
+        ----------
+        x : float, optional
+            Desired power law. The default is 2 (Natural dispersion).
+
+        Returns
+        -------
+        None.
+
+        """
         
         f_end=self.f_low + abs(self.obs_bw)
         
@@ -58,6 +112,15 @@ class broadband(object):
         
     
     def adjust_time(self):
+        """
+        Adjust the start time for injected signal to place it at the starting of corresponding block.
+
+        Note
+        -------
+        If smearning across the band from adjusted pulse time exceeds length of the file, the function will try to re-adjust the start time to accomodate the smearing. 
+        Will raise an error if re-adjusting also fails.
+
+        """
         
         self.blocks_per_file = raw_utils.get_blocks_per_file(self.input_file_stem)
         self.time_per_block = self.raw_params['block_size'] / (self.raw_params['num_antennas'] * self.raw_params['num_chans'] * (2 * self.raw_params['num_pols'] * self.raw_params['num_bits'] // 8)) * self.raw_params['tbin']
@@ -77,12 +140,17 @@ class broadband(object):
             
             assert self.pulse_time  > 0 , f"Smearing across the band ({round(self.smear, 3)}) exceeds length of file ({round(self.raw_params['obs_length'], 3)}) from adjusted pulse time ({round(self.adjusted_pulse_time, 2)}). Try changing DM. "
             
-            warnings.warn('Smearing exceeds length of the file. Re-adjusting pulse time...')
+            warnings.warn(f"Smearing across the band ({round(self.smear, 3)}) exceeds length of file ({round(self.raw_params['obs_length'], 3)}) from adjusted pulse time ({round(self.adjusted_pulse_time, 2)}). Re-adjusting injection time. ")
             
             self.adjust_time()
+            logger.warning("Initial adjusted time failed. Re-adjusted time to account the smearing. Try reducing DM or pulse time to prevent the warning")
             
 
     def file_params(self):
+        """
+        Calculate basic file parameters, header_size, block_size, channel_size, (block_size+header_size)
+
+        """
         
         header=raw_utils.read_header(f'{self.input_file_stem}.0000.raw')
         
@@ -91,11 +159,42 @@ class broadband(object):
         self.chan_size=int(self.data_size/self.raw_params['num_chans'])
         self.block_read_size =  self.header_size + self.data_size
         
+    def info(self):
+        """
+        Display useful parameters for the RAW file
+
+
+        """
+        
+        print("\nRaw parameters from header\n")
+        for key,value in self.raw_params.items():
+            print(key, ' : ', value)
+        
+        print("\nOther useful parameters\n")
+        tag=['Smearing across band(s)','Blocks_per_file', 'Blocks_to_read' , 'Start_block' , 'Time_per_block','File_length(s)','Adjusted_pulse_time']
+        value=(self.smear,self.blocks_per_file,self.blocks_to_read , self.start_block , self.time_per_block,self.time_per_block*self.blocks_per_file,self.adjusted_pulse_time)
+        for i in range(len(tag)):
+            print(tag[i], ':', value[i])
 
 # Dispersion by sample shifting 
 
     def chan_time_delay(self,x):
+        """
+        Compute time delays relative to the high frequency channel in the data.
 
+        Parameters
+        ----------
+        x : float
+            Desire power law.
+
+        Returns
+        -------
+        sample_to_shift : numpy.ndarray
+                          time delay in samples of each channel relative to high frequency channel.   
+
+        """
+        logger.info("Computing time delays")
+        
         f_chan_arr= self.f_low+np.linspace(0, abs(self.obs_bw), self.raw_params['num_chans'], endpoint=False )
         chan_centr=f_chan_arr+abs(self.raw_params['chan_bw']/2.0)
         
@@ -107,7 +206,28 @@ class broadband(object):
     
     @classmethod
     def gauss(cls, x=None, x0=None, fwhm=None, a=None, width=None):
-#         print(x, x0, fwhm, a)
+        """
+        Create a Gaussian pulse profile according to passed parameters.
+
+        Parameters
+        ----------
+        x : array, optional
+            Time series. The default is None; (np.arange(width))
+        x0 : float, optional
+            index of peak value. The default is None; (width/2)
+        fwhm : float, optional
+            Full width at half maximum. The default is None; (width/2)
+        a : float, optional
+            Peak value of the gaussian profile. The default is None.
+        width : int, optional
+            Total span of the pulse to be generated. The default is None.
+
+        Returns
+        -------
+        G : array
+            Generated gaussian pulse profile
+
+        """
         if x is None:
             x=np.arange(width)
         if x0 is None:
@@ -121,11 +241,42 @@ class broadband(object):
             a= 1/(sigma*np.sqrt(2*np.pi))
         
         G= a  * np.exp(-(x-x0)**2 / (2*sigma**2))
-#         plt.plot(G)
-#         plt.show()
         return G
     
+    
     def sample_shift(self, x=2 , b_type='N', op_dir=None, profile=None):
+        """
+        Function to collect raw voltage data, inject natural or artificial broadband signal and output to a GUPPI RAW file.
+
+        Parameters
+        ----------
+        x : float, optional
+            Desired power law. The default is 2(Corresponding to natural dispersion).
+        b_type : str, optional
+            inject any one of the 4 broadband signals;1 Natural signal and 3 Artificial signals (generated by flipping either time axis, frequency axis or both).
+            The default is 'N'.
+            'N': Broadband signal with natural dispersion
+            'A1', 'A2', 'A3': Broadband signal with artificial dispersion (flipped time axis, frequency axis or both)
+        op_dir : str, optional
+            Full path to the output directory. Filename will be automatically appended. Default is current working directory.
+        profile : array, optional
+            User generated pulse prolfile. The default pulse profile generated is a single gaussian spanning the input width and peak at input snr.
+
+        Raises
+        ------
+        Exception
+            When b_type is invalid
+
+        Returns
+        -------
+        None.
+        
+        Notes
+        -----
+        x can be changed to generate signals with artificial power law. b_type can be changed to generate 4 type of broadband signal. 
+        Different combination of x and b_type can be tried.
+
+        """
         
         path, pulse_profile= self.dispatcher(op_dir, profile)
         chan_flip=False
@@ -147,7 +298,7 @@ class broadband(object):
         
         td_in_samps=self.chan_time_delay(x)
         
-        samples_per_chan=int(self.chan_size/(2*self.raw_params['num_pols']))
+        samples_per_chan=int(self.chan_size/(2*self.num_pols))
 
         if flip:  
             td_in_samps=np.flip(td_in_samps)
@@ -157,25 +308,58 @@ class broadband(object):
         with open(path, 'r+b') as self.file_handler:
 
             self.file_handler.seek((self.start_block-1) * self.block_read_size, 0)
-
-            print(f" At {self.file_handler.tell()}")
+            
+            logger.info(f"File handler starting from {self.file_handler.tell()}")
 
             block_cmplx=self.collect_data()
             
-            pulse_profile=broadband.gauss(a=self.snr, width=self.width)
-
             for i in range(self.raw_params['num_chans']):
-            
-                s= int(td_in_samps[i])
-                e= int(td_in_samps[i]+self.width)
 
-                block_cmplx[i][s:e]*=pulse_profile
+                s= int(self.num_pols * td_in_samps[i])
+                e= int(s +  self.num_pols*self.width)
+
+                block_cmplx[i][s:e:self.num_pols]*=pulse_profile
+                
+                if self.num_pols==2:
+                    
+                    block_cmplx[i][s+1:e+1:self.num_pols]*=pulse_profile
+            
+            logger.info(f"Generated delays between channels")
             
             self.write_blocks(block_cmplx)
+            
+            logger.info(f"Dispersion by sample shifting complete!")
+            
         
 
     @classmethod
-    def disperse_filterbank(cls, frame, params, b_type='N', save=True):
+    def disperse_filterbank(cls, frame, params, b_type='N', save=True, op_dir=None):
+        """
+        Function to inject natural and artificial broadband signals in intensity domain.
+
+        Parameters
+        ----------
+        frame : setigen.Frame
+            A filterbank frame of data, from setigen.
+        params : dict
+            A dictionary with broadband parameters; width, snr(signal to noise ratio), t0(start time for injection),
+            DM(dispersion measure), x(optional)(desired power law).
+        b_type : str, optional
+            inject any one of the 4 broadband signals;1 Natural signal and 3 Artificial signals (generated by flipping either time axis, frequency axis or both).
+            The default is 'N'.
+            'N': Broadband signal with natural dispersion
+            'A1', 'A2', 'A3': Broadband signal with artificial dispersion (flipped time axis, frequency axis or both)
+        save : bool, optional
+            Save the frame with injected signal as a filterbank file . The default is True.
+        op_dir : str, optional
+            Full path to the output directory. Filename will be automatically appended (dispersed_frame.fil). Default is current working directory.
+
+        Returns
+        -------
+        frame.data : setigen.Frame
+            Frame of data with injected broadband signal
+
+        """
         
         width, snr, t0, dm,x = params['width'], params['snr'], params['t0'], params['dm'], params.get('x',2)
         
@@ -214,7 +398,13 @@ class broadband(object):
         frame.plot()
         
         if save:
-            frame.save_fil(filename='./data/dispersed_frame.fil')
+            
+            if op_dir is None:
+                loc= os.path.join(os.getcwd(), 'dispersed_frame.fil')
+            else:
+                loc= os.path.join(op_dir, 'dispersed_frame.fil')
+                
+            frame.save_fil(filename = loc)
 
         return(frame.data)
 
@@ -222,6 +412,20 @@ class broadband(object):
 #Dispersion by Convolution
     
     def imp_res(self, imp_length):
+        """
+        Computes impulse response of ISM for each channel.
+
+        Parameters
+        ----------
+        imp_length : int
+            Impulse response length in samples.
+
+        Returns
+        -------
+        H : numpy.ndarray
+            2D array of impulse response for the data
+
+        """
         
         f_coarse_dev=np.linspace(0,np.abs(self.obs_bw),self.raw_params['num_chans'], endpoint=False)
         H=np.empty((self.raw_params['num_chans'], imp_length), dtype=complex)
@@ -237,54 +441,127 @@ class broadband(object):
 
         if not self.raw_params['ascending']:
             H=np.flip(H, axis=0)
-            
+        
+        logger.info(f"Generated impulse response array for {self.raw_params['num_chans']} channels")
+        
         return(H)
     
 
     def dispatcher(self, op_dir, profile):
+        """
+        A common function to generate default pulse profile if not provided by the user, append the output path and duplicate the file. 
+
+        Parameters
+        ----------
+        op_dir : str, optional
+            Full path to the output directory. Filename will be automatically appended. Default is current working directory.
+
+        profile : array, optional
+            User generated pulse prolfile. The default pulse profile generated is a single gaussian spanning the input width and peak at input snr.
+
+        Returns
+        -------
+        path : str
+            Output file stem (output directory + file stem)
+        profile : array
+            Pulse profile
+
+        """
         
         if profile is None:
             profile=broadband.gauss(a=self.snr, width=self.width)
+            logger.info("Created default pulse profile")
         else:
             self.width=len(profile)
+            logger.info("User defined pulse profile")
         
         if op_dir is None:
-            path=os.path.join(os.getcwd(), f'{self.input_file_stem}_dispersed.0000.raw')
+            path=os.path.join(os.getcwd(), f"{self.input_file_stem.split('/')[-1]}_dispersed.0000.raw")
         else:
-            path=os.path.join(op_dir, f'{self.input_file_stem}_dispersed.0000.raw')
+            path=os.path.join(op_dir, f"{self.input_file_stem.split('/')[-1]}_dispersed.0000.raw")
         
         shutil.copyfile(f'{self.input_file_stem}.0000.raw', path )
+        logger.info("Created duplicate file")
         
         return(path, profile)
     
         
     def disperse(self, op_dir=None, profile=None, plot=False, plot_alt=None):
+        """
+        Function to collect raw voltage data, inject a natural broadband signal by convolving the complex time series with impulse response of ISM
+        and output to a GUPPI RAW file.
+        The function collects the complex data and pads it with (impulse_length-1) samples to prevent boundary effects of convolution.
+
+
+        Parameters
+        ----------
+        op_dir : str, optional
+            Full path to the output directory. Filename will be automatically appended. Default is current working directory.
+        profile : array, optional
+            User generated pulse prolfile. The default pulse profile generated is a single gaussian spanning the input width and peak at input snr.
+        plot : bool, optional
+            Display the plot of simulated pulse, impulse response and convolved output of desired channels. The default is False.
+        plot_alt : int, optional
+            If plot is True then display plot of every 'plot_alt' alternate channels. Default is 1, which shows output plots of every channel.
+
+        Returns
+        -------
+        None.
+        
+        Note
+        ----
+        If (impulse_length-1) samples are not available for padding, boundary effect of convolution will be present in the output data(Visible as 
+        a wedge like shape in the intensity domain ). 
+        To prevent this try injections away from initial blocks of the file. 
+        Injections with high DMs and injected pulse time near beginning of the file are susceptible to this effect. 
+        
+        """
         
         path, pulse_profile= self.dispatcher(op_dir, profile)
-        
         impulse_len=int(np.ceil(self.smear/self.raw_params['tbin']))
-
-        print(f"imp length:{impulse_len}")
+        
+        logger.info(f"impulse length in samples: {impulse_len}")
 
         with open(path, 'r+b') as self.file_handler:
             
             self.file_handler.seek((self.start_block-1) * self.block_read_size, 0)
-
-            print(f" At {self.file_handler.tell()}")
+            
+            logger.info(f"File handler starting from {self.file_handler.tell()}")
     
             block_cmplx=self.collect_data()
+            shape = block_cmplx.shape
+            
+            logger.info(f"Adding pulse profile in series  ")
             
             if self.start_block - self.blocks_to_read<1:
-                block_cmplx[ :,(block_cmplx.shape[1])//2:(block_cmplx.shape[1])//2+self.width ]*=pulse_profile
-            else:
-                block_cmplx[ :, :self.width ]*=pulse_profile
                 
+                s= (block_cmplx.shape[1])//(2 * self.num_pols)
+                e= s+ self.num_pols * self.width
+                block_cmplx[ :,s:e:self.num_pols ]*=pulse_profile
+                
+            else:
+                
+                block_cmplx[ :, :self.num_pols*self.width:self.num_pols ]*=pulse_profile
+                
+            logger.info(f" Padding complex time series with (impulse_length-1) samples from previous blocks for convolution  ")
             block_cmplx, conv_mode=self.pad(block_cmplx, impulse_len)
-            h=self.imp_res( impulse_len) 
             
-            dispersed_ts=scipy.signal.fftconvolve(block_cmplx, h, mode=conv_mode, axes=1)
-#             print(block_cmplx.shape, h.shape, dispersed_ts.shape)
-
+            h=self.imp_res( impulse_len)
+            
+            logger.info(f"Shape before padding {shape}. Shape after padding {block_cmplx.shape}. Shape will be same if incomplete data points for padding.")
+            logger.info(f"Performing convolution of complex time series with impulse response of ISM")
+    
+            if self.num_pols==2:
+                
+                dispersed_ts=np.empty((shape), dtype=complex)
+                p1=self.convolve(block_cmplx[:,::2 ], h, conv_mode)
+                dispersed_ts[:,::2 ]=p1
+                dispersed_ts[:,1::2 ]=p1
+                
+            else:
+                
+                dispersed_ts=self.convolve(block_cmplx, h, conv_mode)
+                
             if plot:
                 if plot_alt is None:
                     plot_alt=1
@@ -293,7 +570,7 @@ class broadband(object):
                 
                     plt.figure(figsize = (10,6))
                     a1=plt.subplot(311)
-                    a1.title.set_text(f'Generated pulse, channel {k}')
+                    a1.title.set_text(f'Generated pulse+padding, channel {k}')
                     a1.plot(block_cmplx[k].real)
 
                     a2=plt.subplot(312)
@@ -308,21 +585,87 @@ class broadband(object):
                     plt.show()
             
             self.write_blocks(dispersed_ts)
+            
+            logger.info(f"Dispersion by convolution complete!")
+            
+            
+    def convolve(self, data_cmplx, response, mode):
+        """
+        Function to convolve complex time series with impulse response of ISM
 
+        Parameters
+        ----------
+        data_cmplx : numpy.ndarray
+            Complex time series
+        response : numpy.ndarray
+            Impulse response
+        mode : str
+            Convolution mode
+            mode ‘same’ returns output of length max(data_cmplx, response). Boundary effects are visible.
+            mode ‘valid’ returns output of length max(data_cmplx, response) - min(data_cmplx, response) + 1. The convolution product is only given for points where the signals overlap completely.
 
+        Returns
+        -------
+        dispersed_ts : nump.ndarray
+            Convolved complex output 
+
+        """
+
+        try:
+            from cupyx.scipy import signal
+            
+            if mode=='same':
+                dispersed_ts=np.empty((data_cmplx.shape), dtype=complex)
+            else:
+                dispersed_ts=np.empty((data_cmplx.shape[0], data_cmplx.shape[1] - response.shape[1]+1), dtype=complex) 
+
+            for i in range(self.raw_params['num_chans']):
+                dispersed_ts[i]=xp.asnumpy(signal.fftconvolve(xp.array(data_cmplx[i]), xp.array(response[i]), mode=mode))    
+           
+        except ImportError:
+            
+            logger.warning(f"Recommended to install CuPy. This is not necessary for injection, but will highly accelerate the pipeline")
+            
+            dispersed_ts=scipy.signal.fftconvolve(data_cmplx, response, mode=mode, axes=1)
+            
+        logger.info(f"Convolution complete")
+            
+        return(dispersed_ts)
+    
+    
     def collect_data(self, _from=None, to=None):
+        """
+        Function to collect raw voltage data from input RAW file
+
+        Parameters
+        ----------
+        _from : int, optional
+            Index of block to start reading from. Default is start_block calculated during object initialisation.
+        to : int, optional
+            Total blocks to read. Default is blocks_to_read calculated during object initialisation.
+
+        Returns
+        -------
+        block_cmplx : numpy.ndarray
+            2D complex array reshaped in (channel x data) format 
+
+        """
         
         if _from is None:
             _from=self.start_block
         if to is None:
             to=self.blocks_to_read
+            
+        logger.info(f"Collecting data from block {_from} to {_from+to-1}")
         
         block= (np.frombuffer(self.file_handler.read(self.block_read_size),offset=self.header_size
                               , dtype=np.int8)).reshape(self.raw_params['num_chans'],self.chan_size)
         block=block.astype(float)
-        print(f"seek first bl {self.file_handler.tell()}")
+        logger.info("Read block 1")
 
         for i in range(1,self.blocks_to_read):
+            
+            logger.info(f"Reading block {i+1} out of {self.blocks_to_read} ")
 
             nxt_block= (np.frombuffer(self.file_handler.read(self.block_read_size),offset=self.header_size
                           , dtype=np.int8)).reshape(self.raw_params['num_chans'],self.chan_size)
@@ -330,19 +673,37 @@ class broadband(object):
 
             block=np.hstack((block, nxt_block))
         
-        print(f"seek end {self.file_handler.tell()}")
-        
         block_cmplx=block[: , ::2] + 1j*block[: , 1::2]
         
         return(block_cmplx)
         
         
     def pad(self, L, il):
-        
-        print('pad ',self.file_handler.tell())
+        """
+        Function to pad data with il-1 samples. Padding prevents the boundary effect of convolution.
+
+        Parameters
+        ----------
+        L : numpy.ndarray
+            Complex time series.
+        il : int
+            Length of impulse response.
+
+        Returns
+        -------
+        padded_block : numpy.ndarray
+            Padded complex time series.
+            
+        Note
+        ----
+        If (il-1) samples are not available for padding, padding is aborted and convolution mode is returned as 'same'.
+        Upon successful padding convolution mode is returned as 'valid'.
+        """
         pad_start_block= self.start_block - self.blocks_to_read
         
         if pad_start_block<1:
+            
+            logger.warning(f"Incomplete data points for padding( impulse_len-1 samples from previous blocks is required). Boundary effects of convolution will be visible in the injected signal. Try increasing the start time of the pulse to prevent the warning.   ")
             warnings.warn('Incomplete data points for padding. Boundary effects of convolution will be visible.')
             mode='same'
             return(L, mode)
@@ -351,21 +712,39 @@ class broadband(object):
             self.file_handler.seek((pad_start_block-1) * self.block_read_size, 0)
             cmplx_data=self.collect_data(pad_start_block)
             
-            M_1= cmplx_data[:, 1-il:]
+            M_1= cmplx_data[:, self.num_pols * (1-il):]
             
             padded_block=np.hstack((M_1, L) )
             mode='valid'
+            logger.info("Padding complete")
             return(padded_block, mode)
     
     
     def write_blocks(self, data_chunk):
+        """
+        Function to write and save the dispersed block/s as GUPPI RAW file.
+
+        Parameters
+        ----------
+        data_chunk : numpy.ndarray
+            Dispersed complex series.
+
+        Returns
+        -------
+        None.
+
+        """
+        
+        logger.info(f"Writing block/s")
         
         self.file_handler.seek((self.start_block-1) * self.block_read_size, 0)
+        logger.info(f"Starting file handle position {self.file_handler.tell()} ")
         
         final_data=np.empty((self.data_size))
-        print('writing',self.file_handler.tell())
 
         for i in range(self.blocks_to_read):
+            
+            logger.info(f"Writing block {i+1} out of {self.blocks_to_read} ")
             
             self.file_handler.seek(self.header_size, 1)
             
@@ -378,7 +757,14 @@ class broadband(object):
             final_data[1::2]=np.ravel(block_i.imag)
             
             self.file_handler.write(np.array(final_data, dtype=np.int8).tobytes())
-            print('writ block i',self.file_handler.tell())
+            
+            logger.info(f"Ending file handle position {self.file_handler.tell()} ")
+            logger.info(f"Writing complete")
+            
+
+
+
+
             
             
-            
+
