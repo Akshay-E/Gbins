@@ -1,3 +1,25 @@
+import os
+import shutil 
+
+GPU_FLAG = os.getenv('SETIGEN_ENABLE_GPU', '0')
+
+if GPU_FLAG == '1':
+    try:
+        import cupy as xp
+    except ImportError:
+        import numpy as xp
+else:
+    import numpy as xp
+    
+import numpy as np
+import astropy.units as u
+import warnings
+import scipy
+from setigen.voltage import raw_utils
+import setigen as stg 
+import logging
+import matplotlib.pyplot as plt
+
 logger = logging.getLogger()
 fhandler = logging.FileHandler(filename='broadband_log.log', mode='w')
 logger.addHandler(fhandler)
