@@ -1,5 +1,5 @@
-# G_BINS
-Program for injecting natural and artificial broad band signals at raw volatge level into guppi raw files. 
+# Gbins
+Program for GUPPI raw broadband injections. Injecting natural and artificial broad band signals both at the raw volatge and intensity domain is possible.
 
 ## Dispersion by convolution :
 
