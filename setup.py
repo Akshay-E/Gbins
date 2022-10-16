@@ -22,7 +22,6 @@ setuptools.setup(
        'shutil',
        'warnings',
     ],
-    python_requires=">=3",
 
     
 )
