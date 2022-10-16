@@ -1,6 +1,8 @@
 # Gbins
 Program for GUPPI raw broadband injections. Injecting natural and artificial broad band signals both at the raw volatge and intensity domain is possible.
 
+Considering the ISM as a cold ionised plasma the effect of ISM on pulsed signal can be modeled as the convolution of the signal with the impulse response of ISM. This introduces the frequecny dependent time delay over the observed bandwidth(dispersion). 
+
 ## Workflow
 ![Workflow of the broadband injection pipeline](https://github.com/Akshay-E/G_BINS/blob/main/images/bb_inj.png)
 
