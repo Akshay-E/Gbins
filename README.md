@@ -1,6 +1,9 @@
 # Gbins
 Program for GUPPI raw broadband injections. Injecting natural and artificial broad band signals both at the raw volatge and intensity domain is possible.
 
+## Workflow
+![Workflow of the broadband injection pipeline](https://github.com/Akshay-E/G_BINS/blob/main/images/bb_inj.png)
+
 ## Dispersion by convolution :
 
 Broadband signal injected by convolving complex raw volatges with the transfer function of ISM. 
@@ -33,7 +36,7 @@ Injection of broadband signal onto filterbank files
 
 Natural and artificial dispersed pulse             |  Signals with non-natural power law
 :-------------------------:|:-------------------------:
-![by convolution](https://github.com/Akshay-E/G_BINS/blob/main/images/from_fil.png)|![by convolution_de-dispersed](https://github.com/Akshay-E/G_BINS/blob/main/images/from_fil_varying_exponents.png)
+![by convolution](https://github.com/Akshay-E/G_BINS/blob/main/images/from_fil.png)|![by convolution_de-dispersed](https://github.com/Akshay-E/G_BINS/blob/main/images/plaw.png)
 
 
 
